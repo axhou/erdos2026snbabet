@@ -1,225 +1,72 @@
-# src/backtest.py
-
 import numpy as np
 import pandas as pd
+import scipy.stats as stats
 
 
-def american_odds_to_implied_prob(odds):
-    odds = np.asarray(odds)
+def calc_implied_prob(odds):
     return np.where(odds < 0, np.abs(odds) / (np.abs(odds) + 100), 100 / (odds + 100))
 
 
-def american_odds_to_b(odds):
-    odds = np.asarray(odds)
+def calc_b_odds(odds):
     return np.where(odds < 0, 100 / np.abs(odds), odds / 100)
 
 
-def run_backtest(
-    df,
-    prob_over_col,
-    prob_under_col,
-    line_col="TRUE_MARKET_LINE",
-    actual_col="PTS",
-    odds_over_col="ODDS_OVER",
-    odds_under_col="ODDS_UNDER",
-    edge_threshold=0.03,
-    prefix="",
-):
+def execute_backtest(
+    df: pd.DataFrame,
+    n_col: str,
+    p_col: str,
+    prob_over_col: str,
+    prob_under_col: str,
+    bet_prefix: str = "",
+    edge_threshold: float = 0.03,
+    starting_bankroll: float = 10000,
+) -> pd.DataFrame:
+    """
+    Generic backtest using model-generated probabilities.
+    """
     df = df.copy()
 
-    if odds_over_col not in df.columns:
-        df[odds_over_col] = -110
-    if odds_under_col not in df.columns:
-        df[odds_under_col] = -110
+    if "ODDS_OVER" not in df.columns:
+        df["ODDS_OVER"] = -110
+    if "ODDS_UNDER" not in df.columns:
+        df["ODDS_UNDER"] = -110
 
-    df["IMPLIED_PROB_OVER"] = american_odds_to_implied_prob(df[odds_over_col])
-    df["IMPLIED_PROB_UNDER"] = american_odds_to_implied_prob(df[odds_under_col])
+    df["IMPLIED_PROB_OVER"] = calc_implied_prob(df["ODDS_OVER"])
+    df["IMPLIED_PROB_UNDER"] = calc_implied_prob(df["ODDS_UNDER"])
 
-    edge_over_col = f"EDGE_OVER_{prefix}" if prefix else "EDGE_OVER"
-    edge_under_col = f"EDGE_UNDER_{prefix}" if prefix else "EDGE_UNDER"
-    bet_col = f"BET_PLACED_{prefix}" if prefix else "BET_PLACED"
-    result_col = f"BET_RESULT_{prefix}" if prefix else "BET_RESULT"
-    pnl_col = f"PNL_{prefix}" if prefix else "PNL"
+    df["B_ODDS_OVER"] = calc_b_odds(df["ODDS_OVER"])
+    df["B_ODDS_UNDER"] = calc_b_odds(df["ODDS_UNDER"])
 
-    df[edge_over_col] = df[prob_over_col] - df["IMPLIED_PROB_OVER"]
-    df[edge_under_col] = df[prob_under_col] - df["IMPLIED_PROB_UNDER"]
+    df[f"EDGE_OVER{bet_prefix}"] = df[prob_over_col] - df["IMPLIED_PROB_OVER"]
+    df[f"EDGE_UNDER{bet_prefix}"] = df[prob_under_col] - df["IMPLIED_PROB_UNDER"]
 
-    df[bet_col] = "NO BET"
-    df[bet_col] = np.where(df[edge_over_col] > edge_threshold, "OVER", df[bet_col])
-    df[bet_col] = np.where(
-        (df[edge_under_col] > edge_threshold) & (df[bet_col] == "NO BET"),
+    df[f"BET_PLACED{bet_prefix}"] = "NO BET"
+    df[f"BET_PLACED{bet_prefix}"] = np.where(
+        df[f"EDGE_OVER{bet_prefix}"] > edge_threshold,
+        "OVER",
+        df[f"BET_PLACED{bet_prefix}"],
+    )
+    df[f"BET_PLACED{bet_prefix}"] = np.where(
+        (df[f"EDGE_UNDER{bet_prefix}"] > edge_threshold) & (df[f"BET_PLACED{bet_prefix}"] == "NO BET"),
         "UNDER",
-        df[bet_col],
+        df[f"BET_PLACED{bet_prefix}"],
     )
 
     conditions = [
-        (df[bet_col] == "OVER") & (df[actual_col] > df[line_col]),
-        (df[bet_col] == "UNDER") & (df[actual_col] < df[line_col]),
-        (df[bet_col] == "OVER") & (df[actual_col] < df[line_col]),
-        (df[bet_col] == "UNDER") & (df[actual_col] > df[line_col]),
+        (df[f"BET_PLACED{bet_prefix}"] == "OVER") & (df["PTS"] > df["TRUE_MARKET_LINE"]),
+        (df[f"BET_PLACED{bet_prefix}"] == "UNDER") & (df["PTS"] < df["TRUE_MARKET_LINE"]),
+        (df[f"BET_PLACED{bet_prefix}"] == "OVER") & (df["PTS"] < df["TRUE_MARKET_LINE"]),
+        (df[f"BET_PLACED{bet_prefix}"] == "UNDER") & (df["PTS"] > df["TRUE_MARKET_LINE"]),
     ]
-    df[result_col] = np.select(conditions, ["WIN", "WIN", "LOSS", "LOSS"], default="PUSH")
+    df[f"BET_RESULT{bet_prefix}"] = np.select(conditions, ["WIN", "WIN", "LOSS", "LOSS"], default="PUSH")
 
-    # baseline fixed stake
-    pnl_conditions = [df[result_col] == "WIN", df[result_col] == "LOSS"]
-    df[pnl_col] = np.select(pnl_conditions, [100, -110], default=0)
+    pnl_conditions = [df[f"BET_RESULT{bet_prefix}"] == "WIN", df[f"BET_RESULT{bet_prefix}"] == "LOSS"]
+    df[f"PNL{bet_prefix}"] = np.select(pnl_conditions, [100, -110], default=0)
 
-    return df
+    df[f"CUM_PNL{bet_prefix}"] = df[f"PNL{bet_prefix}"].cumsum()
+    df[f"BANKROLL{bet_prefix}"] = starting_bankroll + df[f"CUM_PNL{bet_prefix}"]
 
-def run_kelly_backtest(
-    df,
-    prob_over_col,
-    prob_under_col,
-    line_col="TRUE_MARKET_LINE",
-    actual_col="PTS",
-    odds_over_col="ODDS_OVER",
-    odds_under_col="ODDS_UNDER",
-    edge_threshold=0.03,
-    starting_bankroll=10000,
-    kelly_fraction_scale=0.5,
-    max_fraction=0.05,
-    prefix="",
-):
-    df = df.copy()
-
-    if odds_over_col not in df.columns:
-        df[odds_over_col] = -110
-    if odds_under_col not in df.columns:
-        df[odds_under_col] = -110
-
-    df["IMPLIED_PROB_OVER"] = american_odds_to_implied_prob(df[odds_over_col])
-    df["IMPLIED_PROB_UNDER"] = american_odds_to_implied_prob(df[odds_under_col])
-
-    df["B_ODDS_OVER"] = american_odds_to_b(df[odds_over_col])
-    df["B_ODDS_UNDER"] = american_odds_to_b(df[odds_under_col])
-
-    edge_over_col = f"EDGE_OVER_{prefix}" if prefix else "EDGE_OVER"
-    edge_under_col = f"EDGE_UNDER_{prefix}" if prefix else "EDGE_UNDER"
-    bet_col = f"BET_PLACED_{prefix}" if prefix else "BET_PLACED"
-    result_col = f"BET_RESULT_{prefix}" if prefix else "BET_RESULT"
-    pnl_col = f"PNL_{prefix}" if prefix else "PNL"
-
-    df[edge_over_col] = df[prob_over_col] - df["IMPLIED_PROB_OVER"]
-    df[edge_under_col] = df[prob_under_col] - df["IMPLIED_PROB_UNDER"]
-
-    df[bet_col] = "NO BET"
-    df[bet_col] = np.where(df[edge_over_col] > edge_threshold, "OVER", df[bet_col])
-    df[bet_col] = np.where(
-        (df[edge_under_col] > edge_threshold) & (df[bet_col] == "NO BET"),
-        "UNDER",
-        df[bet_col],
-    )
-
-    df["KELLY_FRACTION"] = 0.0
-
-    over_mask = df[bet_col] == "OVER"
-    under_mask = df[bet_col] == "UNDER"
-
-    df.loc[over_mask, "KELLY_FRACTION"] = (
-        (df.loc[over_mask, "B_ODDS_OVER"] * df.loc[over_mask, prob_over_col]) -
-        (1 - df.loc[over_mask, prob_over_col])
-    ) / df.loc[over_mask, "B_ODDS_OVER"]
-
-    df.loc[under_mask, "KELLY_FRACTION"] = (
-        (df.loc[under_mask, "B_ODDS_UNDER"] * df.loc[under_mask, prob_under_col]) -
-        (1 - df.loc[under_mask, prob_under_col])
-    ) / df.loc[under_mask, "B_ODDS_UNDER"]
-
-    df["KELLY_FRACTION"] = np.clip(df["KELLY_FRACTION"] * kelly_fraction_scale, 0, max_fraction)
-
-    conditions = [
-        (df[bet_col] == "OVER") & (df[actual_col] > df[line_col]),
-        (df[bet_col] == "UNDER") & (df[actual_col] < df[line_col]),
-        (df[bet_col] == "OVER") & (df[actual_col] < df[line_col]),
-        (df[bet_col] == "UNDER") & (df[actual_col] > df[line_col]),
-    ]
-    df[result_col] = np.select(conditions, ["WIN", "WIN", "LOSS", "LOSS"], default="PUSH")
-
-    df["WAGER_AMOUNT"] = np.where(df[bet_col] != "NO BET", starting_bankroll * df["KELLY_FRACTION"], 0)
-
-    win_multiplier = np.where(df[bet_col] == "OVER", df["B_ODDS_OVER"], df["B_ODDS_UNDER"])
-    pnl_conditions = [df[result_col] == "WIN", df[result_col] == "LOSS"]
-    pnl_choices = [df["WAGER_AMOUNT"] * win_multiplier, -df["WAGER_AMOUNT"]]
-    df[pnl_col] = np.select(pnl_conditions, pnl_choices, default=0)
-
-    return df
-
-
-
-def run_kelly_backtest(
-    df,
-    prob_over_col,
-    prob_under_col,
-    line_col="TRUE_MARKET_LINE",
-    actual_col="PTS",
-    odds_over_col="ODDS_OVER",
-    odds_under_col="ODDS_UNDER",
-    edge_threshold=0.03,
-    starting_bankroll=10000,
-    kelly_fraction_scale=0.5,
-    max_fraction=0.05,
-    prefix="",
-):
-    df = df.copy()
-
-    if odds_over_col not in df.columns:
-        df[odds_over_col] = -110
-    if odds_under_col not in df.columns:
-        df[odds_under_col] = -110
-
-    df["IMPLIED_PROB_OVER"] = american_odds_to_implied_prob(df[odds_over_col])
-    df["IMPLIED_PROB_UNDER"] = american_odds_to_implied_prob(df[odds_under_col])
-
-    df["B_ODDS_OVER"] = american_odds_to_b(df[odds_over_col])
-    df["B_ODDS_UNDER"] = american_odds_to_b(df[odds_under_col])
-
-    edge_over_col = f"EDGE_OVER_{prefix}" if prefix else "EDGE_OVER"
-    edge_under_col = f"EDGE_UNDER_{prefix}" if prefix else "EDGE_UNDER"
-    bet_col = f"BET_PLACED_{prefix}" if prefix else "BET_PLACED"
-    result_col = f"BET_RESULT_{prefix}" if prefix else "BET_RESULT"
-    pnl_col = f"PNL_{prefix}" if prefix else "PNL"
-
-    df[edge_over_col] = df[prob_over_col] - df["IMPLIED_PROB_OVER"]
-    df[edge_under_col] = df[prob_under_col] - df["IMPLIED_PROB_UNDER"]
-
-    df[bet_col] = "NO BET"
-    df[bet_col] = np.where(df[edge_over_col] > edge_threshold, "OVER", df[bet_col])
-    df[bet_col] = np.where(
-        (df[edge_under_col] > edge_threshold) & (df[bet_col] == "NO BET"),
-        "UNDER",
-        df[bet_col],
-    )
-
-    df["KELLY_FRACTION"] = 0.0
-
-    over_mask = df[bet_col] == "OVER"
-    under_mask = df[bet_col] == "UNDER"
-
-    df.loc[over_mask, "KELLY_FRACTION"] = (
-        (df.loc[over_mask, "B_ODDS_OVER"] * df.loc[over_mask, prob_over_col]) -
-        (1 - df.loc[over_mask, prob_over_col])
-    ) / df.loc[over_mask, "B_ODDS_OVER"]
-
-    df.loc[under_mask, "KELLY_FRACTION"] = (
-        (df.loc[under_mask, "B_ODDS_UNDER"] * df.loc[under_mask, prob_under_col]) -
-        (1 - df.loc[under_mask, prob_under_col])
-    ) / df.loc[under_mask, "B_ODDS_UNDER"]
-
-    df["KELLY_FRACTION"] = np.clip(df["KELLY_FRACTION"] * kelly_fraction_scale, 0, max_fraction)
-
-    conditions = [
-        (df[bet_col] == "OVER") & (df[actual_col] > df[line_col]),
-        (df[bet_col] == "UNDER") & (df[actual_col] < df[line_col]),
-        (df[bet_col] == "OVER") & (df[actual_col] < df[line_col]),
-        (df[bet_col] == "UNDER") & (df[actual_col] > df[line_col]),
-    ]
-    df[result_col] = np.select(conditions, ["WIN", "WIN", "LOSS", "LOSS"], default="PUSH")
-
-    df["WAGER_AMOUNT"] = np.where(df[bet_col] != "NO BET", starting_bankroll * df["KELLY_FRACTION"], 0)
-
-    win_multiplier = np.where(df[bet_col] == "OVER", df["B_ODDS_OVER"], df["B_ODDS_UNDER"])
-    pnl_conditions = [df[result_col] == "WIN", df[result_col] == "LOSS"]
-    pnl_choices = [df["WAGER_AMOUNT"] * win_multiplier, -df["WAGER_AMOUNT"]]
-    df[pnl_col] = np.select(pnl_conditions, pnl_choices, default=0)
+    actual_prob = stats.nbinom.pmf(k=df["PTS"], n=df[n_col], p=df[p_col])
+    df[f"LOG_LIKELIHOOD{bet_prefix}"] = -np.log(actual_prob + 1e-9)
 
     return df
