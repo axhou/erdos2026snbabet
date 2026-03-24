@@ -292,3 +292,29 @@ def fit_mlp(train_df, test_df, features=DEFAULT_FEATURES, epochs=150, lr=0.01):
         df_["NN_ADJUSTED_SIGMA2"] = df_["NN_ADJUSTED_MU"] * dispersion_ratio
 
     return train_df, test_df, model, scaler
+
+def train_xgboost_multiseason_oos(df, train_seasons, test_season, features=DEFAULT_FEATURES):
+    df = df.copy().dropna(subset=features + ["PTS"])
+
+    train_df = df[df["SEASON"].isin(train_seasons)].copy()
+    test_df = df[df["SEASON"] == test_season].copy()
+
+    X_train = train_df[features]
+    y_train = train_df["PTS"]
+    X_test = test_df[features]
+
+    model = xgb.XGBRegressor(
+        objective="count:poisson",
+        n_estimators=150,
+        learning_rate=0.05,
+        max_depth=4,
+        random_state=42,
+    )
+    model.fit(X_train, y_train)
+
+    test_df["XGB_ADJUSTED_MU"] = model.predict(X_test)
+
+    dispersion_ratio = test_df["PTS_ROLL_VAR_SIGMA2"] / test_df["PTS_ROLL_MEAN_MU"]
+    test_df["XGB_ADJUSTED_SIGMA2"] = test_df["XGB_ADJUSTED_MU"] * dispersion_ratio
+
+    return test_df, model
