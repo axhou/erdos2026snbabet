@@ -28,7 +28,6 @@ The workflow has been refactored from a single notebook into standalone scripts 
 │   └── predictions
 │       ├── glm_predictions.csv
 │       └── tree_model_predictions.csv
-├── scripts
 ├── src
 │   ├── __init__.py
 │   ├── config.py
