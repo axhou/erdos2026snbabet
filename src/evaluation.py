@@ -3,7 +3,33 @@ from src.distributions import (
     add_probability_columns,
     negative_binomial_params,
 )
+def evaluate_gam(df):
+    df = df.copy()
 
+    n_param, p_param = negative_binomial_params(
+        df["GAM_ADJUSTED_MU"],
+        df["GAM_ADJUSTED_SIGMA2"],
+    )
+    df["n_param_GAM"] = n_param
+    df["p_param_GAM"] = p_param
+
+    if "TRUE_MARKET_LINE" in df.columns:
+        df = add_probability_columns(
+            df,
+            mu_col="GAM_ADJUSTED_MU",
+            sigma2_col="GAM_ADJUSTED_SIGMA2",
+            prefix="_GAM",
+        )
+
+    df = add_log_likelihood(
+        df,
+        actual_col="PTS",
+        n_col="n_param_GAM",
+        p_col="p_param_GAM",
+        suffix="_GAM",
+    )
+
+    return df
 
 def evaluate_glm(df):
     df = df.copy()

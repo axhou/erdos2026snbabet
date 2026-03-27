@@ -1,7 +1,8 @@
 from pathlib import Path
 import argparse
 import pandas as pd
-
+from src.models.gam_model import fit_gam_and_predict
+from src.evaluation import evaluate_glm, evaluate_gam, evaluate_ensemble_nll, evaluate_xgb_walk_forward
 from src.data_generation import fetch_nba_team_data, scrape_multi_year_sbr_odds
 from src.preprocessing import clean_team_logs
 from src.features import add_rolling_team_features, prepare_matchup_data
@@ -80,7 +81,19 @@ def run_glm():
 
     print(f"Saved GLM predictions to {out_path}")
     print(f"Mean GLM NLL: {glm_df['LOG_LIKELIHOOD_GLM'].mean():.4f}")
+    
+def run_gam():
+    ensure_dirs()
 
+    df = pd.read_csv(PROCESSED_DIR / "nba_matchups_features.csv")
+    gam_df, gam_model = fit_gam_and_predict(df)
+    gam_df = evaluate_gam(gam_df)
+
+    out_path = PREDICTIONS_DIR / "gam_predictions.csv"
+    gam_df.to_csv(out_path, index=False)
+
+    print(f"Saved GAM predictions to {out_path}")
+    print(f"Mean GAM NLL: {gam_df['LOG_LIKELIHOOD_GAM'].mean():.6f}")
 
 def run_tree_models():
     ensure_dirs()
@@ -110,7 +123,6 @@ def run_xgb_walk_forward(eval_season: str):
     print(f"Saved walk-forward XGBoost predictions to {out_path}")
     print(f"Mean XGB walk-forward NLL: {wf_df['LOG_LIKELIHOOD_XGB_WF'].mean():.6f}")
 
-
 def run_backtest(model: str, edge_threshold: float, eval_season: str):
     ensure_dirs()
 
@@ -126,6 +138,19 @@ def run_backtest(model: str, edge_threshold: float, eval_season: str):
             starting_bankroll=10000,
         )
         out_path = TABLES_DIR / "glm_backtest_results.csv"
+
+    elif model == "gam":
+        df = pd.read_csv(PREDICTIONS_DIR / "gam_predictions.csv")
+        result_df = execute_backtest(
+            df=df,
+            prob_over_col="PROB_OVER_GAM",
+            prob_under_col="PROB_UNDER_GAM",
+            market_line_col="TRUE_MARKET_LINE",
+            bet_prefix="_GAM",
+            edge_threshold=edge_threshold,
+            starting_bankroll=10000,
+        )
+        out_path = TABLES_DIR / "gam_backtest_results.csv"
 
     elif model == "rf":
         df = pd.read_csv(PREDICTIONS_DIR / "tree_model_predictions.csv")
@@ -167,7 +192,7 @@ def run_backtest(model: str, edge_threshold: float, eval_season: str):
         out_path = TABLES_DIR / f"xgb_walkforward_backtest_results_{eval_season}.csv"
 
     else:
-        raise ValueError("model must be one of: glm, rf, xgb, xgb-wf")
+        raise ValueError("model must be one of: glm, gam, rf, xgb, xgb-wf")
 
     result_df.to_csv(out_path, index=False)
     print(f"Saved backtest results to {out_path}")
@@ -181,12 +206,12 @@ def main():
     subparsers.add_parser("preprocess")
     subparsers.add_parser("glm")
     subparsers.add_parser("tree-models")
-
+    subparsers.add_parser("gam")
     wf_parser = subparsers.add_parser("xgb-walk-forward")
     wf_parser.add_argument("--eval-season", default="2022-23")
 
     backtest_parser = subparsers.add_parser("backtest")
-    backtest_parser.add_argument("--model", choices=["glm", "rf", "xgb", "xgb-wf"], default="glm")
+    backtest_parser.add_argument("--model", choices=["glm", "gam", "rf", "xgb", "xgb-wf"], default="glm")
     backtest_parser.add_argument("--edge-threshold", type=float, default=0.03)
     backtest_parser.add_argument("--eval-season", default="2022-23")
 
@@ -200,6 +225,8 @@ def main():
         run_glm()
     elif args.step == "tree-models":
         run_tree_models()
+    elif args.step == "gam":
+        run_gam()
     elif args.step == "xgb-walk-forward":
         run_xgb_walk_forward(eval_season=args.eval_season)
     elif args.step == "backtest":
